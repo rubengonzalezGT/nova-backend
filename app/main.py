@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers import auth, chat, knowledge, upload, polly
+from app.routers import memory_ai
 
 app = FastAPI(
     title="Nova AI — Backend",
@@ -11,7 +12,7 @@ app = FastAPI(
 # ── CORS ─────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:4200", "*"],  # en producción poner solo el dominio
+    allow_origins=["http://localhost:4200", "*"],  
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -23,10 +24,11 @@ app.include_router(chat.router)
 app.include_router(knowledge.router)
 app.include_router(upload.router)
 app.include_router(polly.router)
+app.include_router(memory_ai.router)
 
 @app.get("/")
 def root():
-    return {"status": "Nova API corriendo ✅", "version": "1.0.0"}
+    return {"status": "Nova API corriendo", "version": "1.0.0"}
 
 @app.get("/health")
 def health():
