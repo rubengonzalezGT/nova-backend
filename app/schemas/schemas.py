@@ -79,3 +79,29 @@ class PdfOut(BaseModel):
 # ── Polly ────────────────────────────────────────────────────
 class PollyRequest(BaseModel):
     text: str
+
+# ── Memory AI ────────────────────────────────────────────────
+class MemoryLearnRequest(BaseModel):
+    question: str
+    answer: str
+
+class MemoryLearnResponse(BaseModel):
+    action: str        # "created" | "reinforced"
+    question: str      # normalizada
+    answer: str
+    votes: int
+    message: str
+
+    # ── Memory Stats ─────────────────────────────────────────────
+class MemoryCandidate(BaseModel):
+    answer: str
+    votes: int
+    similarity: float
+    score: float
+
+class MemoryStatsResponse(BaseModel):
+    question_original: str
+    question_normalized: str
+    total_candidates: int
+    chosen_answer: Optional[str]
+    candidates: List[MemoryCandidate]

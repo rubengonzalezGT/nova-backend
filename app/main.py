@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routers import auth, chat, knowledge, upload, polly
+from app.routers import auth, chat, knowledge, upload, polly, pdf_ask
 from app.routers import memory_ai
 
 app = FastAPI(
@@ -25,6 +25,7 @@ app.include_router(knowledge.router)
 app.include_router(upload.router)
 app.include_router(polly.router)
 app.include_router(memory_ai.router)
+app.include_router(pdf_ask.router)
 
 @app.get("/")
 def root():

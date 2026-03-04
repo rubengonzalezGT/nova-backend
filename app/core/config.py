@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     AWS_ACCESS_KEY_ID: str = ""
     AWS_SECRET_ACCESS_KEY: str = ""
     AWS_REGION: str = "us-east-2"
-    S3_BUCKET_NAME: str = "nova-pdfs"
+    S3_BUCKET_NAME: str = "nova-backend-pdfs"
 
     OLLAMA_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "mistral"
