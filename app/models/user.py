@@ -114,3 +114,26 @@ class Embedding(Base):
     model_version = Column(String(50),  nullable=True, default="nomic-embed-text")
     created_at    = Column(TIMESTAMP,   nullable=False, default=func.now())
     knowledge_item = relationship("KnowledgeItem", back_populates="embeddings")
+
+class QaMemory(Base):
+    __tablename__ = "qa_memory"
+    id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id    = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    question   = Column(Text, nullable=False)
+    answer     = Column(Text, nullable=False)
+    votes      = Column(Integer, nullable=False, default=1)
+    created_at = Column(TIMESTAMP, nullable=False, default=func.now())
+    updated_at = Column(TIMESTAMP, nullable=False, default=func.now())
+    user = relationship("User")
+
+
+class PdfChunk(Base):
+    __tablename__ = "pdf_chunks"
+    id          = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    pdf_id      = Column(UUID(as_uuid=True), ForeignKey("pdf_documents.id", ondelete="CASCADE"), nullable=False)
+    filename    = Column(String(255), nullable=False)
+    chunk_text  = Column(Text, nullable=False)
+    page_num    = Column(Integer, nullable=True)
+    chunk_index = Column(Integer, nullable=False, default=0)
+    created_at  = Column(TIMESTAMP, nullable=False, default=func.now())
+    pdf_document = relationship("PdfDocument")

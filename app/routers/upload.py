@@ -1,24 +1,47 @@
+import re
 import uuid
 import boto3
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 from PyPDF2 import PdfReader
 from io import BytesIO
+
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.core.config import settings
-from app.models.user import User, PdfDocument, KnowledgeItem, Embedding
+from app.models.user import User, PdfDocument, KnowledgeItem, PdfChunk
 from app.schemas.schemas import PdfOut
-from app.services.embedding_service import get_embedding
-from app.routers.knowledge import chunk_text
 
 router = APIRouter(tags=["Upload"])
+
+
+def clean_pdf_text(text: str) -> str:
+    text = re.sub(r'[~\-]\s*\d+\s*[~\-]', ' ', text)
+    text = re.sub(r'\n\s*\d+\s*\n', '\n', text)
+    text = re.sub(r'\S+@\S+\.\S+', '', text)
+    text = re.sub(r'http\S+', '', text)
+    lines = [l.strip() for l in text.split('\n') if len(l.strip()) > 30]
+    text = re.sub(r'[^\w\s.,;:áéíóúÁÉÍÓÚñÑüÜ¿?¡!()\-]', ' ', ' '.join(lines))
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def split_chunks(text: str, chunk_size: int = 400, overlap: int = 50) -> list:
+    words = text.split()
+    chunks = []
+    i = 0
+    while i < len(words):
+        chunk = " ".join(words[i:i + chunk_size])
+        if len(chunk.strip()) > 30:
+            chunks.append(chunk)
+        i += chunk_size - overlap
+    return chunks
+
 
 @router.post("/upload-pdf", response_model=PdfOut)
 async def upload_pdf(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
 ):
     if not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Solo se aceptan archivos PDF")
@@ -32,36 +55,36 @@ async def upload_pdf(
             "s3",
             aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
             aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-            region_name=settings.AWS_REGION
+            region_name=settings.AWS_REGION,
         )
         s3.put_object(Bucket=settings.S3_BUCKET_NAME, Key=s3_key, Body=content)
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Error subiendo a S3: {str(e)}")
 
-    # 2 — Extraer texto del PDF
+    # 2 — Extraer y limpiar texto
     try:
         reader = PdfReader(BytesIO(content))
         pages = len(reader.pages)
-        full_text = "\n".join([p.extract_text() or "" for p in reader.pages])
+        raw_text = "\n".join([p.extract_text() or "" for p in reader.pages])
+        full_text = clean_pdf_text(raw_text)
     except Exception:
         raise HTTPException(status_code=400, detail="No se pudo leer el PDF")
 
-    # 3 — Guardar registro en BD
+    if not full_text.strip():
+        raise HTTPException(status_code=400, detail="El PDF no contiene texto extraíble.")
+
+    # 3 — Guardar PdfDocument
     pdf_doc = PdfDocument(
         uploaded_by=current_user.id,
         filename=file.filename,
         s3_key=s3_key,
         file_size_bytes=len(content),
         page_count=pages,
-        status="pending"
+        status="pending",
     )
     db.add(pdf_doc)
     db.commit()
     db.refresh(pdf_doc)
-
-    # 4 — Crear knowledge items y embeddings por chunks
-    chunks = chunk_text(full_text, chunk_size=400)
-    total_chunks = 0
 
     try:
         knowledge_item = KnowledgeItem(
@@ -70,29 +93,24 @@ async def upload_pdf(
             title=file.filename.replace(".pdf", ""),
             content=full_text[:1000],
             source="pdf",
-            tags=[]
+            tags=[],
         )
         db.add(knowledge_item)
         db.commit()
         db.refresh(knowledge_item)
 
+        chunks = split_chunks(full_text)
         for idx, chunk in enumerate(chunks):
-            if not chunk.strip():
-                continue
-            vector = await get_embedding(chunk)
-            emb = Embedding(
-                knowledge_id=knowledge_item.id,
+            db.add(PdfChunk(
+                pdf_id=pdf_doc.id,
+                filename=file.filename,
                 chunk_index=idx,
                 chunk_text=chunk,
-                embedding=vector
-            )
-            db.add(emb)
-            total_chunks += 1
+            ))
 
         db.commit()
-
         pdf_doc.status = "processed"
-        pdf_doc.chunks_generated = total_chunks
+        pdf_doc.chunks_generated = len(chunks)
         db.commit()
 
     except Exception as e:
@@ -105,7 +123,10 @@ async def upload_pdf(
 
 
 @router.get("/pdfs")
-def get_pdfs(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def get_pdfs(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     return db.query(PdfDocument).filter(
         PdfDocument.uploaded_by == current_user.id
     ).order_by(PdfDocument.uploaded_at.desc()).all()

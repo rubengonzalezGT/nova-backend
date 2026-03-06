@@ -4,15 +4,16 @@ import re
 import unicodedata
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import text
 from app.core.database import get_db
 from app.core.security import get_current_user
-from app.models.user import User, Conversation, Message, ConfidenceLevel
+from app.models.user import User, Conversation, Message, QaMemory, ConfidenceLevel
 from app.schemas.schemas import ChatRequest, ChatResponse, MessageOut
+from sqlalchemy import text
 
 router = APIRouter(tags=["Chat"])
 
 SYSTEM_EMAIL = "system@nova.com"
+
 
 # ── Helpers ───────────────────────────────────────────────────
 
@@ -24,35 +25,32 @@ def normalize_question(q: str) -> str:
     q = re.sub(r"\s+", " ", q).strip()
     return q
 
-def get_global_user_id(db: Session) -> str:
-    row = db.execute(
-        text("SELECT id FROM users WHERE email = :email LIMIT 1"),
-        {"email": SYSTEM_EMAIL},
-    ).first()
-    if not row:
+
+def get_global_user(db: Session) -> User:
+    user = db.query(User).filter(User.email == SYSTEM_EMAIL).first()
+    if not user:
         raise HTTPException(status_code=500, detail=f"No existe usuario global: {SYSTEM_EMAIL}")
-    return str(row.id)
+    return user
+
 
 def query_memory(db: Session, question: str) -> dict:
-    uid = get_global_user_id(db)
+    system_user = get_global_user(db)
     q = normalize_question(question)
 
     rows = db.execute(text("""
         SELECT question, answer, votes, similarity(question, :q) AS sim
         FROM qa_memory
-        WHERE user_id = :uid
-          AND question % :q
+        WHERE user_id = :uid AND question % :q
         ORDER BY sim DESC, votes DESC, updated_at DESC
         LIMIT 20
-    """), {"q": q, "uid": uid}).fetchall()
+    """), {"q": q, "uid": str(system_user.id)}).fetchall()
 
     if not rows:
         return {"knows": False, "answer": None, "confidence": "inferred", "similarity": 0.0}
 
     scores = {}
     for r in rows:
-        score = float(r.sim) * max(int(r.votes), 1)
-        scores[r.answer] = scores.get(r.answer, 0.0) + score
+        scores[r.answer] = scores.get(r.answer, 0.0) + float(r.sim) * max(int(r.votes), 1)
 
     best_answer, _ = max(scores.items(), key=lambda x: x[1])
     top_sim = float(rows[0].sim)
@@ -60,13 +58,7 @@ def query_memory(db: Session, question: str) -> dict:
     if top_sim < 0.35:
         return {"knows": False, "answer": None, "confidence": "inferred", "similarity": top_sim}
 
-    if top_sim >= 0.85:
-        confidence = "high"
-    elif top_sim >= 0.60:
-        confidence = "medium"
-    else:
-        confidence = "inferred"
-
+    confidence = "high" if top_sim >= 0.85 else "medium" if top_sim >= 0.60 else "inferred"
     return {"knows": True, "answer": best_answer, "confidence": confidence, "similarity": top_sim}
 
 
@@ -76,7 +68,7 @@ def query_memory(db: Session, question: str) -> dict:
 def chat(
     data: ChatRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
 ):
     start = time.time()
 
@@ -84,43 +76,32 @@ def chat(
     if data.conversation_id:
         conversation = db.query(Conversation).filter(
             Conversation.id == data.conversation_id,
-            Conversation.user_id == current_user.id
+            Conversation.user_id == current_user.id,
         ).first()
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversación no encontrada")
     else:
-        conversation = Conversation(
-            user_id=current_user.id,
-            title=data.message[:50]
-        )
+        conversation = Conversation(user_id=current_user.id, title=data.message[:50])
         db.add(conversation)
         db.commit()
         db.refresh(conversation)
 
     # 2 — Guardar mensaje del usuario
-    user_msg = Message(
-        conversation_id=conversation.id,
-        role="user",
-        content=data.message
-    )
-    db.add(user_msg)
+    db.add(Message(conversation_id=conversation.id, role="user", content=data.message))
     db.commit()
 
     # 3 — Consultar memoria
     result = query_memory(db, data.message)
 
     # 4 — Construir respuesta
-    if result["knows"]:
-        response_text = result["answer"]
-    else:
-        response_text = "No tengo información sobre eso todavía. ¿Me puedes enseñar? Usa el panel de conocimiento para que aprenda."
+    response_text = result["answer"] if result["knows"] else \
+        "No tengo información sobre eso todavía. ¿Me puedes enseñar? Usa el panel de conocimiento."
 
     confidence_map = {
-        "high":     ConfidenceLevel.high,
-        "medium":   ConfidenceLevel.medium,
+        "high": ConfidenceLevel.high,
+        "medium": ConfidenceLevel.medium,
         "inferred": ConfidenceLevel.inferred,
     }
-    confidence = confidence_map[result["confidence"]]
     elapsed_ms = int((time.time() - start) * 1000)
 
     # 5 — Guardar respuesta
@@ -128,23 +109,20 @@ def chat(
         conversation_id=conversation.id,
         role="assistant",
         content=response_text,
-        confidence=confidence,
-        response_time_ms=elapsed_ms
+        confidence=confidence_map[result["confidence"]],
+        response_time_ms=elapsed_ms,
     )
     db.add(ai_msg)
     db.commit()
     db.refresh(ai_msg)
 
-    return ChatResponse(
-        message=MessageOut.model_validate(ai_msg),
-        conversation_id=conversation.id
-    )
+    return ChatResponse(message=MessageOut.model_validate(ai_msg), conversation_id=conversation.id)
 
 
 @router.get("/conversations")
 def get_conversations(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
 ):
     return db.query(Conversation).filter(
         Conversation.user_id == current_user.id
@@ -155,11 +133,11 @@ def get_conversations(
 def get_messages(
     conversation_id: uuid.UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
 ):
     conversation = db.query(Conversation).filter(
         Conversation.id == conversation_id,
-        Conversation.user_id == current_user.id
+        Conversation.user_id == current_user.id,
     ).first()
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversación no encontrada")
@@ -167,22 +145,18 @@ def get_messages(
         Message.conversation_id == conversation_id
     ).order_by(Message.created_at.asc()).all()
 
+
 @router.get("/historial")
 def get_historial(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
 ):
     conversaciones = db.query(Conversation).filter(
         Conversation.user_id == current_user.id
     ).order_by(Conversation.updated_at.desc()).all()
 
-    resultado = []
-    for conv in conversaciones:
-        mensajes = db.query(Message).filter(
-            Message.conversation_id == conv.id
-        ).order_by(Message.created_at.asc()).all()
-
-        resultado.append({
+    return [
+        {
             "conversation_id": str(conv.id),
             "title": conv.title,
             "message_count": conv.message_count,
@@ -193,10 +167,12 @@ def get_historial(
                     "role": m.role,
                     "content": m.content,
                     "confidence": m.confidence,
-                    "created_at": str(m.created_at)
+                    "created_at": str(m.created_at),
                 }
-                for m in mensajes
-            ]
-        })
-
-    return resultado
+                for m in db.query(Message).filter(
+                    Message.conversation_id == conv.id
+                ).order_by(Message.created_at.asc()).all()
+            ],
+        }
+        for conv in conversaciones
+    ]
