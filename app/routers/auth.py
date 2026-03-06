@@ -25,7 +25,11 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(user)
 
-    token = create_access_token({"sub": str(user.id)})
+    token = create_access_token({
+    "sub": str(user.id),
+    "name": user.username,
+    "email": user.email
+    })
     return TokenResponse(access_token=token, user=UserOut.model_validate(user))
 
 
@@ -40,5 +44,9 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
     user.last_login = datetime.utcnow()
     db.commit()
 
-    token = create_access_token({"sub": str(user.id)})
+    token = create_access_token({
+    "sub": str(user.id),
+    "name": user.username,
+    "email": user.email
+    })
     return TokenResponse(access_token=token, user=UserOut.model_validate(user))
