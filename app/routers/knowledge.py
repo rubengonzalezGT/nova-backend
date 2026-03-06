@@ -22,43 +22,6 @@ def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> List[str]
     return chunks if chunks else [text]
 
 
-@router.post("/learn", response_model=KnowledgeOut)
-async def learn(data: LearnRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    # Crear knowledge item
-    item = KnowledgeItem(
-        created_by=current_user.id,
-        title=data.title,
-        content=data.content,
-        source="manual",
-        tags=data.tags or []
-    )
-    db.add(item)
-    db.commit()
-    db.refresh(item)
-
-    # Generar embeddings por chunks
-    chunks = chunk_text(data.content)
-    try:
-        for idx, chunk in enumerate(chunks):
-            vector = await get_embedding(chunk)
-            emb = Embedding(
-                knowledge_id=item.id,
-                chunk_index=idx,
-                chunk_text=chunk,
-                embedding=vector
-            )
-            db.add(emb)
-        db.commit()
-    except Exception as e:
-        db.delete(item)
-        db.commit()
-        raise HTTPException(status_code=503, detail=f"Error generando embeddings: {str(e)}")
-
-    result = KnowledgeOut.model_validate(item)
-    result.creator_username = current_user.username
-    return result
-
-
 @router.get("/knowledge", response_model=List[KnowledgeOut])
 def get_knowledge(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     items = db.query(KnowledgeItem).order_by(KnowledgeItem.created_at.desc()).all()

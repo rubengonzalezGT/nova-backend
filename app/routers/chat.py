@@ -1,18 +1,83 @@
 import time
 import uuid
+import re
+import unicodedata
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.core.database import get_db
 from app.core.security import get_current_user
-from app.models.user import User, Conversation, Message, KnowledgeItem, Embedding, ConfidenceLevel
+from app.models.user import User, Conversation, Message, ConfidenceLevel
 from app.schemas.schemas import ChatRequest, ChatResponse, MessageOut
-from app.services.embedding_service import get_embedding, get_ollama_response
 
 router = APIRouter(tags=["Chat"])
 
+SYSTEM_EMAIL = "system@nova.com"
+
+# ── Helpers ───────────────────────────────────────────────────
+
+def normalize_question(q: str) -> str:
+    q = q.strip().lower()
+    q = unicodedata.normalize("NFKD", q)
+    q = "".join(c for c in q if not unicodedata.combining(c))
+    q = re.sub(r"[^a-z0-9\s]", " ", q)
+    q = re.sub(r"\s+", " ", q).strip()
+    return q
+
+def get_global_user_id(db: Session) -> str:
+    row = db.execute(
+        text("SELECT id FROM users WHERE email = :email LIMIT 1"),
+        {"email": SYSTEM_EMAIL},
+    ).first()
+    if not row:
+        raise HTTPException(status_code=500, detail=f"No existe usuario global: {SYSTEM_EMAIL}")
+    return str(row.id)
+
+def query_memory(db: Session, question: str) -> dict:
+    uid = get_global_user_id(db)
+    q = normalize_question(question)
+
+    rows = db.execute(text("""
+        SELECT question, answer, votes, similarity(question, :q) AS sim
+        FROM qa_memory
+        WHERE user_id = :uid
+          AND question % :q
+        ORDER BY sim DESC, votes DESC, updated_at DESC
+        LIMIT 20
+    """), {"q": q, "uid": uid}).fetchall()
+
+    if not rows:
+        return {"knows": False, "answer": None, "confidence": "inferred", "similarity": 0.0}
+
+    scores = {}
+    for r in rows:
+        score = float(r.sim) * max(int(r.votes), 1)
+        scores[r.answer] = scores.get(r.answer, 0.0) + score
+
+    best_answer, _ = max(scores.items(), key=lambda x: x[1])
+    top_sim = float(rows[0].sim)
+
+    if top_sim < 0.35:
+        return {"knows": False, "answer": None, "confidence": "inferred", "similarity": top_sim}
+
+    if top_sim >= 0.85:
+        confidence = "high"
+    elif top_sim >= 0.60:
+        confidence = "medium"
+    else:
+        confidence = "inferred"
+
+    return {"knows": True, "answer": best_answer, "confidence": confidence, "similarity": top_sim}
+
+
+# ── Endpoints ─────────────────────────────────────────────────
+
 @router.post("/chat", response_model=ChatResponse)
-async def chat(data: ChatRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def chat(
+    data: ChatRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     start = time.time()
 
     # 1 — Obtener o crear conversación
@@ -41,59 +106,24 @@ async def chat(data: ChatRequest, db: Session = Depends(get_db), current_user: U
     db.add(user_msg)
     db.commit()
 
-    # 3 — Generar embedding de la pregunta
-    try:
-        query_vector = await get_embedding(data.message)
-    except Exception:
-        raise HTTPException(status_code=503, detail="Ollama no disponible. Verifica que esté corriendo.")
+    # 3 — Consultar memoria
+    result = query_memory(db, data.message)
 
-    # 4 — Búsqueda semántica en pgvector
-    vector_str = "[" + ",".join(map(str, query_vector)) + "]"
-    results = db.execute(text("""
-        SELECT e.chunk_text, k.title,
-               1 - (e.embedding <=> :vec::vector) AS similarity
-        FROM embeddings e
-        JOIN knowledge_items k ON e.knowledge_id = k.id
-        WHERE 1 - (e.embedding <=> :vec::vector) > 0.45
-        ORDER BY similarity DESC
-        LIMIT 5
-    """), {"vec": vector_str}).fetchall()
-
-    # 5 — Determinar confianza
-    if not results:
-        confidence = ConfidenceLevel.inferred
-        context = "No tengo información específica sobre este tema."
-    elif results[0].similarity > 0.85:
-        confidence = ConfidenceLevel.high
-        context = "\n\n".join([f"[{r.title}]: {r.chunk_text}" for r in results])
-    elif results[0].similarity > 0.65:
-        confidence = ConfidenceLevel.medium
-        context = "\n\n".join([f"[{r.title}]: {r.chunk_text}" for r in results])
+    # 4 — Construir respuesta
+    if result["knows"]:
+        response_text = result["answer"]
     else:
-        confidence = ConfidenceLevel.inferred
-        context = "\n\n".join([f"[{r.title}]: {r.chunk_text}" for r in results])
+        response_text = "No tengo información sobre eso todavía. ¿Me puedes enseñar? Usa el panel de conocimiento para que aprenda."
 
-    # Actualizar use_count de los knowledge items usados
-    if results:
-        for r in results:
-            db.execute(text("""
-                UPDATE knowledge_items k
-                SET use_count = use_count + 1
-                FROM embeddings e
-                WHERE e.knowledge_id = k.id AND e.chunk_text = :chunk
-            """), {"chunk": r.chunk_text})
-        db.commit()
-
-    # 6 — Generar respuesta con Mistral
-    try:
-        response_text = await get_ollama_response(data.message, context)
-    except Exception:
-        response_text = "Lo siento, hubo un error al generar la respuesta."
-        confidence = ConfidenceLevel.inferred
-
+    confidence_map = {
+        "high":     ConfidenceLevel.high,
+        "medium":   ConfidenceLevel.medium,
+        "inferred": ConfidenceLevel.inferred,
+    }
+    confidence = confidence_map[result["confidence"]]
     elapsed_ms = int((time.time() - start) * 1000)
 
-    # 7 — Guardar respuesta de la IA
+    # 5 — Guardar respuesta
     ai_msg = Message(
         conversation_id=conversation.id,
         role="assistant",
@@ -112,14 +142,21 @@ async def chat(data: ChatRequest, db: Session = Depends(get_db), current_user: U
 
 
 @router.get("/conversations")
-def get_conversations(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def get_conversations(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     return db.query(Conversation).filter(
         Conversation.user_id == current_user.id
     ).order_by(Conversation.updated_at.desc()).all()
 
 
 @router.get("/conversations/{conversation_id}/messages")
-def get_messages(conversation_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def get_messages(
+    conversation_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     conversation = db.query(Conversation).filter(
         Conversation.id == conversation_id,
         Conversation.user_id == current_user.id
@@ -129,3 +166,37 @@ def get_messages(conversation_id: uuid.UUID, db: Session = Depends(get_db), curr
     return db.query(Message).filter(
         Message.conversation_id == conversation_id
     ).order_by(Message.created_at.asc()).all()
+
+@router.get("/historial")
+def get_historial(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    conversaciones = db.query(Conversation).filter(
+        Conversation.user_id == current_user.id
+    ).order_by(Conversation.updated_at.desc()).all()
+
+    resultado = []
+    for conv in conversaciones:
+        mensajes = db.query(Message).filter(
+            Message.conversation_id == conv.id
+        ).order_by(Message.created_at.asc()).all()
+
+        resultado.append({
+            "conversation_id": str(conv.id),
+            "title": conv.title,
+            "message_count": conv.message_count,
+            "created_at": str(conv.created_at),
+            "updated_at": str(conv.updated_at),
+            "messages": [
+                {
+                    "role": m.role,
+                    "content": m.content,
+                    "confidence": m.confidence,
+                    "created_at": str(m.created_at)
+                }
+                for m in mensajes
+            ]
+        })
+
+    return resultado
