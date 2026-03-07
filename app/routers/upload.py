@@ -1,6 +1,7 @@
 import re
 import uuid
 import boto3
+import logging
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 from PyPDF2 import PdfReader
@@ -13,7 +14,7 @@ from app.models.user import User, PdfDocument, KnowledgeItem, PdfChunk
 from app.schemas.schemas import PdfOut
 
 router = APIRouter(tags=["Upload"])
-
+logger = logging.getLogger(__name__)
 
 def clean_pdf_text(text: str) -> str:
     text = re.sub(r'[~\-]\s*\d+\s*[~\-]', ' ', text)
@@ -25,17 +26,48 @@ def clean_pdf_text(text: str) -> str:
     return re.sub(r'\s+', ' ', text).strip()
 
 
-def split_chunks(text: str, chunk_size: int = 400, overlap: int = 50) -> list:
-    words = text.split()
-    chunks = []
-    i = 0
-    while i < len(words):
-        chunk = " ".join(words[i:i + chunk_size])
-        if len(chunk.strip()) > 30:
-            chunks.append(chunk)
-        i += chunk_size - overlap
-    return chunks
+def split_chunks(text: str, max_words: int = 180, overlap: int = 40):
 
+    paragraphs = [
+        p.strip()
+        for p in text.split("\n")
+        if len(p.strip()) > 40
+    ]
+
+    chunks = []
+    buffer = []
+
+    for p in paragraphs:
+
+        words = p.split()
+
+        # párrafos muy largos
+        if len(words) > max_words:
+
+            i = 0
+            while i < len(words):
+
+                chunk = " ".join(words[i:i + max_words])
+
+                if len(chunk.split()) > 20:
+                    chunks.append(chunk)
+
+                i += max_words - overlap
+
+        else:
+
+            buffer.extend(words)
+
+            if len(buffer) >= max_words:
+
+                chunks.append(" ".join(buffer))
+
+                buffer = buffer[-overlap:]
+
+    if buffer:
+        chunks.append(" ".join(buffer))
+
+    return chunks
 
 @router.post("/upload-pdf", response_model=PdfOut)
 async def upload_pdf(
@@ -59,7 +91,8 @@ async def upload_pdf(
         )
         s3.put_object(Bucket=settings.S3_BUCKET_NAME, Key=s3_key, Body=content)
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Error subiendo a S3: {str(e)}")
+        logger.error(f"Error subiendo PDF a S3: {str(e)}")
+        raise HTTPException(status_code=503, detail="Error subiendo el PDF. Intenta de nuevo más tarde.")
 
     # 2 — Extraer y limpiar texto
     try:
@@ -100,6 +133,9 @@ async def upload_pdf(
         db.refresh(knowledge_item)
 
         chunks = split_chunks(full_text)
+        if len(chunks) > 1200:
+            chunks = chunks[:1200]
+
         for idx, chunk in enumerate(chunks):
             db.add(PdfChunk(
                 pdf_id=pdf_doc.id,
@@ -114,9 +150,10 @@ async def upload_pdf(
         db.commit()
 
     except Exception as e:
+        logger.error(f"PDF processing failed: {str(e)}")
         pdf_doc.status = "error"
         db.commit()
-        raise HTTPException(status_code=500, detail=f"Error procesando PDF: {str(e)}")
+        raise HTTPException(status_code=500, detail="Error procesando el PDF")
 
     db.refresh(pdf_doc)
     return PdfOut.model_validate(pdf_doc)
