@@ -1,7 +1,6 @@
 import re
 import unicodedata
 import uuid
-from app.utils.text_utils import chunk_text
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -14,7 +13,7 @@ from app.schemas.schemas import (
     MemoryLearnRequest, MemoryLearnResponse,
     MemoryCandidate, MemoryStatsResponse,
 )
-from app.models.user import KnowledgeItem, Embedding, KnowledgeSource
+from app.models.user import KnowledgeItem, KnowledgeSource
 from app.services.embedding_service import get_embedding
 
 router = APIRouter(prefix="/memory", tags=["Memory AI"])
@@ -93,7 +92,7 @@ def ask(
 
 
 @router.post("/teach")
-async def teach(
+def teach(
     data: TeachRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -103,10 +102,12 @@ async def teach(
     q = normalize_question(data.question)
     a = data.answer.strip()
 
+    if not q:
+        raise HTTPException(status_code=422, detail="La pregunta no puede estar vacía")
     if not a:
-        raise HTTPException(status_code=422, detail="La respuesta no puede ir vacía")
+        raise HTTPException(status_code=422, detail="La respuesta no puede estar vacía")
 
-    # ── Guardar en memoria IA ─────────────────────────
+    # Guardar o reforzar en qa_memory
     existing = db.query(QaMemory).filter(
         QaMemory.user_id == system_user.id,
         QaMemory.question == q,
@@ -124,7 +125,7 @@ async def teach(
             votes=1
         ))
 
-    # ── Crear KnowledgeItem ─────────────────────────
+    # Guardar en knowledge_items
     knowledge = KnowledgeItem(
         id=uuid.uuid4(),
         created_by=current_user.id,
@@ -133,39 +134,15 @@ async def teach(
         source=KnowledgeSource.manual,
         tags=[]
     )
-
     db.add(knowledge)
-    db.flush()
-
-    # ── Crear embeddings (RAG) ──────────────────────
-    chunks = chunk_text(a)
-
-    for i, chunk in enumerate(chunks):
-
-        vector = await get_embedding(chunk)
-
-        emb = Embedding(
-            id=uuid.uuid4(),
-            knowledge_id=knowledge.id,
-            chunk_index=i,
-            chunk_text=chunk,
-            embedding=vector
-        )
-
-        db.add(emb)
-
     db.commit()
+    db.refresh(knowledge)
 
     return {
-        "id": knowledge.id,
-        "title": knowledge.title,
-        "content": knowledge.content,
-        "source": knowledge.source.value,
-        "tags": knowledge.tags,
-        "is_verified": knowledge.is_verified,
-        "use_count": knowledge.use_count,
-        "created_at": knowledge.created_at,
-        "creator_username": current_user.username
+        "id": str(knowledge.id),
+        "question": data.question,
+        "answer": a,
+        "created_at": str(knowledge.created_at),
     }
 
 @router.post("/learn", response_model=MemoryLearnResponse)
