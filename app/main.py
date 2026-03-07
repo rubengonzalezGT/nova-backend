@@ -12,7 +12,10 @@ app = FastAPI(
 # ── CORS ─────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:4200", "*"],  
+    allow_origins=[
+        "http://localhost:4200",
+        "https://nova-backend-alos.onrender.com"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

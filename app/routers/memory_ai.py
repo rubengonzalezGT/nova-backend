@@ -93,7 +93,7 @@ def ask(
 
 
 @router.post("/teach")
-def teach(
+async def teach(
     data: TeachRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -135,14 +135,14 @@ def teach(
     )
 
     db.add(knowledge)
-    db.flush()   # necesario para obtener el id
+    db.flush()
 
     # ── Crear embeddings (RAG) ──────────────────────
     chunks = chunk_text(a)
 
     for i, chunk in enumerate(chunks):
 
-        vector = get_embedding(chunk)
+        vector = await get_embedding(chunk)
 
         emb = Embedding(
             id=uuid.uuid4(),
@@ -167,7 +167,6 @@ def teach(
         "created_at": knowledge.created_at,
         "creator_username": current_user.username
     }
-
 
 @router.post("/learn", response_model=MemoryLearnResponse)
 def learn(
