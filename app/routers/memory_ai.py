@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
 
+from app.models.user import KnowledgeItem, KnowledgeSource
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.user import User, QaMemory, PdfChunk
@@ -265,6 +266,18 @@ def teach(
             votes=1
         ))
 
+    db.commit()
+    # Guardar en knowledge_items para el calendario
+
+    knowledge = KnowledgeItem(
+        id=uuid.uuid4(),
+        created_by=current_user.id,
+        title=data.question,
+        content=a,
+        source=KnowledgeSource.manual,
+        tags=[]
+    )
+    db.add(knowledge)
     db.commit()
 
     return {
