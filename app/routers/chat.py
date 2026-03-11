@@ -4,11 +4,11 @@ import re
 import unicodedata
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy import text, or_
 from app.core.database import get_db
 from app.core.security import get_current_user
-from app.models.user import User, Conversation, Message, QaMemory, ConfidenceLevel
+from app.models.user import User, Conversation, Message, QaMemory, ConfidenceLevel, PdfChunk
 from app.schemas.schemas import ChatRequest, ChatResponse, MessageOut
-from sqlalchemy import text
 
 router = APIRouter(tags=["Chat"])
 
@@ -62,6 +62,32 @@ def query_memory(db: Session, question: str) -> dict:
     return {"knows": True, "answer": best_answer, "confidence": confidence, "similarity": top_sim}
 
 
+def query_pdf(db: Session, question: str) -> dict:
+    q = normalize_question(question)
+    words = q.split()
+    keywords = [w[:6] for w in words if len(w) > 3]
+
+    if not keywords:
+        return {"knows": False, "answer": None}
+
+    filters = [PdfChunk.chunk_text.ilike(f"%{kw}%") for kw in keywords[:4]]
+    chunks = db.query(PdfChunk).filter(or_(*filters)).limit(3).all()
+
+    if not chunks:
+        return {"knows": False, "answer": None}
+
+    best = chunks[0]
+    text_clean = re.sub(r'\s+', ' ', best.chunk_text).strip()
+
+    # Eliminar título al inicio (texto en mayúscula sin punto antes del contenido real)
+    text_clean = re.sub(r'^[A-ZÁÉÍÓÚ][^.!?]{0,80}(?=[A-ZÁÉÍÓÚ])', '', text_clean).strip()
+
+    sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text_clean) if len(s.strip()) > 20]
+
+    answer = " ".join(sentences[:2])[:500] if sentences else text_clean[:400]
+    return {"knows": True, "answer": answer}
+
+
 # ── Endpoints ─────────────────────────────────────────────────
 
 @router.post("/chat", response_model=ChatResponse)
@@ -92,6 +118,17 @@ def chat(
 
     # 3 — Consultar memoria
     result = query_memory(db, data.message)
+
+    # 3b — Si no sabe, buscar en PDFs
+    if not result["knows"]:
+        pdf_result = query_pdf(db, data.message)
+        if pdf_result["knows"]:
+            result = {
+                "knows": True,
+                "answer": pdf_result["answer"],
+                "confidence": "inferred",
+                "similarity": 0.0
+            }
 
     # 4 — Construir respuesta
     response_text = result["answer"] if result["knows"] else \

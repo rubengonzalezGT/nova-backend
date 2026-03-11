@@ -21,7 +21,7 @@ def clean_pdf_text(text: str) -> str:
     text = re.sub(r'\n\s*\d+\s*\n', '\n', text)
     text = re.sub(r'\S+@\S+\.\S+', '', text)
     text = re.sub(r'http\S+', '', text)
-    lines = [l.strip() for l in text.split('\n') if len(l.strip()) > 30]
+    lines = [l.strip() for l in text.split('\n') if len(l.strip()) > 10]
     text = re.sub(r'[^\w\s.,;:áéíóúÁÉÍÓÚñÑüÜ¿?¡!()\-]', ' ', ' '.join(lines))
     return re.sub(r'\s+', ' ', text).strip()
 
@@ -29,9 +29,9 @@ def clean_pdf_text(text: str) -> str:
 def split_chunks(text: str, max_words: int = 180, overlap: int = 40):
 
     paragraphs = [
-        p.strip()
-        for p in text.split("\n")
-        if len(p.strip()) > 40
+    p.strip()
+    for p in text.split("\n")
+        if len(p.strip()) > 10  # ← de 40 a 10
     ]
 
     chunks = []

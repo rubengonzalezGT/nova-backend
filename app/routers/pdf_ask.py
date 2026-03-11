@@ -49,6 +49,10 @@ def extract_best_sentences(chunk: str, keywords: list, context: int = 1) -> str:
     chunk = clean_chunk(chunk)
     sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', chunk) if len(s.strip()) > 20]
 
+    # Saltar primera oración si parece título (corta y sin punto)
+    if sentences and len(sentences[0]) < 60 and '.' not in sentences[0]:
+        sentences = sentences[1:]
+
     if not sentences:
         return chunk[:400]
 
@@ -61,7 +65,6 @@ def extract_best_sentences(chunk: str, keywords: list, context: int = 1) -> str:
         return " ".join(sentences[:2])
 
     indices = set()
-
     for h in hits[:2]:
         for i in range(max(0, h - context), min(len(sentences), h + context + 1)):
             indices.add(i)
@@ -78,10 +81,14 @@ def format_answer(question: str, answer: str) -> str:
     q = question.lower().strip()
 
     if q.startswith(("que es", "qué es")):
-        return f"{question.split(' ', 2)[-1].strip().capitalize()} es: {answer}"
+        tema = question.split(' ', 2)[-1].strip().capitalize()
+        if not answer.lower().startswith(tema.lower()):
+            return f"{tema} es: {answer}"
+        return answer
 
     elif q.startswith(("cuales son", "cuáles son")):
-        return f"Las/Los {question.split(' ', 2)[-1].strip().capitalize()} son: {answer}"
+        tema = question.split(' ', 2)[-1].strip().capitalize()
+        return f"Las/Los {tema} son: {answer}"
 
     elif q.startswith(("como", "cómo", "quien", "quién")):
         return f"{question.split(' ', 1)[-1].strip().capitalize()}: {answer}"
@@ -106,12 +113,12 @@ def pdf_ask(
         w for w in normalized_question.split()
         if len(w) > 3 and w not in STOPWORDS
     ]
+    keywords = [w[:6] for w in keywords]  # stemming básico
 
     if not keywords:
         raise HTTPException(status_code=400, detail="La pregunta es muy corta.")
 
     try:
-
         filters = [
             PdfChunk.chunk_text.ilike(f"%{kw}%")
             for kw in keywords[:4]
