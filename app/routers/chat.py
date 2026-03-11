@@ -79,12 +79,27 @@ def query_pdf(db: Session, question: str) -> dict:
     best = chunks[0]
     text_clean = re.sub(r'\s+', ' ', best.chunk_text).strip()
 
-    # Eliminar título al inicio (texto en mayúscula sin punto antes del contenido real)
+    # Eliminar título al inicio
     text_clean = re.sub(r'^[A-ZÁÉÍÓÚ][^.!?]{0,80}(?=[A-ZÁÉÍÓÚ])', '', text_clean).strip()
 
     sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text_clean) if len(s.strip()) > 20]
 
-    answer = " ".join(sentences[:2])[:500] if sentences else text_clean[:400]
+    # Buscar oraciones más relevantes según keywords
+    hits = []
+    for i, s in enumerate(sentences):
+        score = sum(1 for kw in keywords if kw in s.lower())
+        if score > 0:
+            hits.append((i, score))
+
+    if hits:
+        hits.sort(key=lambda x: x[1], reverse=True)
+        best_i = hits[0][0]
+        start = max(0, best_i - 1)
+        end = min(len(sentences), best_i + 2)
+        answer = " ".join(sentences[start:end])[:500]
+    else:
+        answer = " ".join(sentences[:2])[:500] if sentences else text_clean[:400]
+
     return {"knows": True, "answer": answer}
 
 

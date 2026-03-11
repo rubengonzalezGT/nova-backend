@@ -27,41 +27,31 @@ def clean_pdf_text(text: str) -> str:
 
 
 def split_chunks(text: str, max_words: int = 180, overlap: int = 40):
+    # Primero intentar dividir por párrafos
+    paragraphs = [p.strip() for p in text.split("\n") if len(p.strip()) > 10]
+    
+    # Si hay párrafos suficientes y el texto es corto, usar párrafos directamente
+    if len(paragraphs) >= 2 and len(text.split()) < max_words * 2:
+        return [p for p in paragraphs if len(p.split()) > 5]
 
-    paragraphs = [
-    p.strip()
-    for p in text.split("\n")
-        if len(p.strip()) > 10  # ← de 40 a 10
-    ]
-
+    # Para textos largos, usar chunking normal con overlap
     chunks = []
     buffer = []
 
     for p in paragraphs:
-
         words = p.split()
 
-        # párrafos muy largos
         if len(words) > max_words:
-
             i = 0
             while i < len(words):
-
                 chunk = " ".join(words[i:i + max_words])
-
                 if len(chunk.split()) > 20:
                     chunks.append(chunk)
-
                 i += max_words - overlap
-
         else:
-
             buffer.extend(words)
-
             if len(buffer) >= max_words:
-
                 chunks.append(" ".join(buffer))
-
                 buffer = buffer[-overlap:]
 
     if buffer:
