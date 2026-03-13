@@ -14,6 +14,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:4200",
+        "https://nova-front.onrender.com",
         "https://nova-backend-alos.onrender.com"
     ],
     allow_credentials=True,
