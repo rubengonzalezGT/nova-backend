@@ -173,7 +173,7 @@ def ask(
 
     q = normalize_question(data.question)
 
-    # 1️⃣ buscar en memoria manual
+    # 1️. buscar en memoria manual
 
     rows = search_memory(db, str(system_user.id), q)
 
@@ -196,7 +196,7 @@ def ask(
                 "source": "memory"
             }
 
-    # 2️⃣ buscar en PDFs
+    # 2️. buscar en PDFs
 
     pdf_chunks = search_pdf_chunks(db, data.question)
 
@@ -214,7 +214,7 @@ def ask(
             "chunk": best_chunk.chunk_index + 1
         }
 
-    # 3️⃣ no sabe
+    # 3️. no sabe
 
     return {
         "knows": False,

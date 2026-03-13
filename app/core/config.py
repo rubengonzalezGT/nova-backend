@@ -11,10 +11,6 @@ class Settings(BaseSettings):
     AWS_REGION: str = "us-east-2"
     S3_BUCKET_NAME: str = "nova-backend-pdfs"
 
-    OLLAMA_URL: str = "http://localhost:11434"
-    OLLAMA_MODEL: str = "mistral"
-    EMBED_MODEL: str = "nomic-embed-text"
-
     POLLY_VOICE: str = "Lupe"
     POLLY_LANGUAGE: str = "es-US"
 

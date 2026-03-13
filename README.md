@@ -1,6 +1,6 @@
-# Nova Backend 🧠
+# Nova Backend
 
-FastAPI + PostgreSQL + pgvector + Ollama
+FastAPI + PostgreSQL + pgvector + AWS
 
 ## Setup
 
@@ -30,14 +30,28 @@ Abre: http://localhost:8000/docs
 | POST | /auth/register | Registrar usuario |
 | POST | /auth/login | Login → JWT |
 | POST | /chat | Enviar mensaje a la IA |
-| POST | /learn | Enseñar conocimiento nuevo |
+| GET  | /conversations | Historial de conversaciones |
+| GET  | /conversations/{id}/messages | Mensajes de una conversación |
+| POST | /memory/teach | Enseñar conocimiento nuevo |
+| POST | /memory/ask | Consultar memoria de la IA |
+| GET  | /memory/stats | Estadísticas de memoria |
 | GET  | /knowledge | Listar todo el conocimiento |
-| POST | /upload-pdf | Subir PDF → RAG automático |
+| DELETE | /knowledge/{id} | Eliminar un item |
+| POST | /upload-pdf | Subir PDF a la base de conocimiento |
+| GET  | /pdfs | Listar PDFs subidos |
 | POST | /polly | Texto a voz (Amazon Polly) |
+| GET  | /pdf/ask | Consultar directamente los PDFs |
 
 ## Requisitos previos
 
 - Python 3.12+
-- Ollama corriendo con `mistral` y `nomic-embed-text`
-- RDS PostgreSQL con pgvector
+- RDS PostgreSQL con extensión pgvector
 - Credenciales AWS (S3 + Polly)
+
+## Sistema de IA
+
+El sistema de inteligencia se basa en:
+
+- **Memoria QA** — búsqueda por similitud con `pg_trgm` y sistema de votos
+- **PDFs** — chunks de texto con búsqueda por keywords y stemming
+- **Fallback** — si no hay información suficiente, Nova lo indica claramente

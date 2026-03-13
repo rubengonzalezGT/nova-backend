@@ -3,9 +3,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import get_current_user
-from app.models.user import User, KnowledgeItem, Embedding
+from app.models.user import User, KnowledgeItem
 from app.schemas.schemas import LearnRequest, KnowledgeOut
-from app.services.embedding_service import get_embedding
 from typing import List
 
 router = APIRouter(tags=["Knowledge"])

@@ -86,8 +86,8 @@ class MemoryLearnRequest(BaseModel):
     answer: str
 
 class MemoryLearnResponse(BaseModel):
-    action: str        # "created" | "reinforced"
-    question: str      # normalizada
+    action: str        
+    question: str      
     answer: str
     votes: int
     message: str
