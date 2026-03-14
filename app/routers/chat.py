@@ -14,6 +14,13 @@ router = APIRouter(tags=["Chat"])
 
 SYSTEM_EMAIL = "system@nova.com"
 
+# Palabras vacías que no aportan significado a la búsqueda
+STOPWORDS = {
+    "para", "con", "sin", "una", "uno", "unos", "unas", "los", "las", "del", "hay",
+    "mis", "sus", "nos", "les", "ayer", "hoy", "manana", "semana", "aprendiste",
+    "sabes", "tienes", "puedes", "dime", "cuentame", "cuéntame"
+}
+
 
 # ── Helpers ───────────────────────────────────────────────────
 
@@ -26,6 +33,12 @@ def normalize_question(q: str) -> str:
     return q
 
 
+def extract_keywords(q: str) -> list[str]:
+    """Extrae palabras significativas quitando stopwords."""
+    words = normalize_question(q).split()
+    return [w for w in words if len(w) > 3 and w not in STOPWORDS]
+
+
 def get_global_user(db: Session) -> User:
     user = db.query(User).filter(User.email == SYSTEM_EMAIL).first()
     if not user:
@@ -36,6 +49,11 @@ def get_global_user(db: Session) -> User:
 def query_memory(db: Session, question: str) -> dict:
     system_user = get_global_user(db)
     q = normalize_question(question)
+    keywords = extract_keywords(question)
+
+    # Si la pregunta no tiene palabras clave significativas, no buscar
+    if len(keywords) < 1:
+        return {"knows": False, "answer": None, "confidence": "inferred", "similarity": 0.0}
 
     rows = db.execute(text("""
         SELECT question, answer, votes, similarity(question, :q) AS sim
@@ -48,29 +66,44 @@ def query_memory(db: Session, question: str) -> dict:
     if not rows:
         return {"knows": False, "answer": None, "confidence": "inferred", "similarity": 0.0}
 
-    scores = {}
+    # Filtrar resultados que compartan al menos 1 keyword con la pregunta original
+    valid_rows = []
     for r in rows:
+        q_norm = normalize_question(r.question)
+        shared = sum(1 for kw in keywords if kw[:5] in q_norm)
+        if shared >= 1:
+            valid_rows.append(r)
+
+    if not valid_rows:
+        return {"knows": False, "answer": None, "confidence": "inferred", "similarity": 0.0}
+
+    top_sim = float(valid_rows[0].sim)
+
+    # Umbral mínimo subido a 0.55
+    if top_sim < 0.55:
+        return {"knows": False, "answer": None, "confidence": "inferred", "similarity": top_sim}
+
+    scores = {}
+    for r in valid_rows:
         scores[r.answer] = scores.get(r.answer, 0.0) + float(r.sim) * max(int(r.votes), 1)
 
     best_answer, _ = max(scores.items(), key=lambda x: x[1])
-    top_sim = float(rows[0].sim)
-
-    if top_sim < 0.35:
-        return {"knows": False, "answer": None, "confidence": "inferred", "similarity": top_sim}
-
     confidence = "high" if top_sim >= 0.85 else "medium" if top_sim >= 0.60 else "inferred"
+
     return {"knows": True, "answer": best_answer, "confidence": confidence, "similarity": top_sim}
 
 
 def query_pdf(db: Session, question: str) -> dict:
     q = normalize_question(question)
-    words = q.split()
-    keywords = [w[:6] for w in words if len(w) > 3]
+    keywords = extract_keywords(question)
 
-    if not keywords:
+    # Usar stemming de 6 chars solo con palabras significativas
+    stems = [w[:6] for w in keywords]
+
+    if not stems:
         return {"knows": False, "answer": None}
 
-    filters = [PdfChunk.chunk_text.ilike(f"%{kw}%") for kw in keywords[:4]]
+    filters = [PdfChunk.chunk_text.ilike(f"%{kw}%") for kw in stems[:4]]
     chunks = db.query(PdfChunk).filter(or_(*filters)).limit(3).all()
 
     if not chunks:
@@ -87,7 +120,7 @@ def query_pdf(db: Session, question: str) -> dict:
     # Buscar oraciones más relevantes según keywords
     hits = []
     for i, s in enumerate(sentences):
-        score = sum(1 for kw in keywords if kw in s.lower())
+        score = sum(1 for kw in stems if kw in s.lower())
         if score > 0:
             hits.append((i, score))
 
