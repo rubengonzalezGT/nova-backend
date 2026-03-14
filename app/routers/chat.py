@@ -14,7 +14,6 @@ router = APIRouter(tags=["Chat"])
 
 SYSTEM_EMAIL = "system@nova.com"
 
-# Palabras vacías que no aportan significado a la búsqueda
 STOPWORDS = {
     "para", "con", "sin", "una", "uno", "unos", "unas", "los", "las", "del", "hay",
     "mis", "sus", "nos", "les", "ayer", "hoy", "manana", "semana", "aprendiste",
@@ -34,7 +33,6 @@ def normalize_question(q: str) -> str:
 
 
 def extract_keywords(q: str) -> list[str]:
-    """Extrae palabras significativas quitando stopwords."""
     words = normalize_question(q).split()
     return [w for w in words if len(w) > 3 and w not in STOPWORDS]
 
@@ -51,7 +49,6 @@ def query_memory(db: Session, question: str) -> dict:
     q = normalize_question(question)
     keywords = extract_keywords(question)
 
-    # Si la pregunta no tiene palabras clave significativas, no buscar
     if len(keywords) < 1:
         return {"knows": False, "answer": None, "confidence": "inferred", "similarity": 0.0}
 
@@ -66,7 +63,6 @@ def query_memory(db: Session, question: str) -> dict:
     if not rows:
         return {"knows": False, "answer": None, "confidence": "inferred", "similarity": 0.0}
 
-    # Filtrar resultados que compartan al menos 1 keyword con la pregunta original
     valid_rows = []
     for r in rows:
         q_norm = normalize_question(r.question)
@@ -79,7 +75,6 @@ def query_memory(db: Session, question: str) -> dict:
 
     top_sim = float(valid_rows[0].sim)
 
-    # Umbral mínimo subido a 0.55
     if top_sim < 0.55:
         return {"knows": False, "answer": None, "confidence": "inferred", "similarity": top_sim}
 
@@ -97,7 +92,6 @@ def query_pdf(db: Session, question: str) -> dict:
     q = normalize_question(question)
     keywords = extract_keywords(question)
 
-    # Usar stemming de 6 chars solo con palabras significativas
     stems = [w[:6] for w in keywords]
 
     if not stems:
@@ -111,13 +105,10 @@ def query_pdf(db: Session, question: str) -> dict:
 
     best = chunks[0]
     text_clean = re.sub(r'\s+', ' ', best.chunk_text).strip()
-
-    # Eliminar título al inicio
     text_clean = re.sub(r'^[A-ZÁÉÍÓÚ][^.!?]{0,80}(?=[A-ZÁÉÍÓÚ])', '', text_clean).strip()
 
     sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text_clean) if len(s.strip()) > 20]
 
-    # Buscar oraciones más relevantes según keywords
     hits = []
     for i, s in enumerate(sentences):
         score = sum(1 for kw in stems if kw in s.lower())
@@ -127,11 +118,15 @@ def query_pdf(db: Session, question: str) -> dict:
     if hits:
         hits.sort(key=lambda x: x[1], reverse=True)
         best_i = hits[0][0]
+
+        if hits[0][1] < 2:
+            return {"knows": False, "answer": None}
+
         start = max(0, best_i - 1)
         end = min(len(sentences), best_i + 2)
         answer = " ".join(sentences[start:end])[:500]
     else:
-        answer = " ".join(sentences[:2])[:500] if sentences else text_clean[:400]
+        return {"knows": False, "answer": None}
 
     return {"knows": True, "answer": answer}
 
@@ -146,7 +141,6 @@ def chat(
 ):
     start = time.time()
 
-    # 1 — Obtener o crear conversación
     if data.conversation_id:
         conversation = db.query(Conversation).filter(
             Conversation.id == data.conversation_id,
@@ -160,14 +154,11 @@ def chat(
         db.commit()
         db.refresh(conversation)
 
-    # 2 — Guardar mensaje del usuario
     db.add(Message(conversation_id=conversation.id, role="user", content=data.message))
     db.commit()
 
-    # 3 — Consultar memoria
     result = query_memory(db, data.message)
 
-    # 3b — Si no sabe, buscar en PDFs
     if not result["knows"]:
         pdf_result = query_pdf(db, data.message)
         if pdf_result["knows"]:
@@ -178,7 +169,6 @@ def chat(
                 "similarity": 0.0
             }
 
-    # 4 — Construir respuesta
     response_text = result["answer"] if result["knows"] else \
         "No tengo información sobre eso todavía. ¿Me puedes enseñar? Usa el panel de conocimiento."
 
@@ -189,7 +179,6 @@ def chat(
     }
     elapsed_ms = int((time.time() - start) * 1000)
 
-    # 5 — Guardar respuesta
     ai_msg = Message(
         conversation_id=conversation.id,
         role="assistant",
